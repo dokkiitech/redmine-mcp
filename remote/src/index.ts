@@ -79,7 +79,13 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
 				project_id: z.string().describe("プロジェクトの identifier または数値 ID"),
 				subject: z.string().describe("件名(必須)"),
 				description: z.string().optional().describe("説明"),
-				tracker_id: z.number().int().optional().describe("トラッカー数値 ID"),
+				tracker_id: z
+					.number()
+					.int()
+					.optional()
+					.describe(
+						"トラッカー数値 ID。プロジェクトで有効なもののみ有効(無効な ID は Redmine が黙って別トラッカーに差し替える。get_project で有効トラッカーを確認できる)",
+					),
 				priority_id: z.number().int().optional().describe("優先度数値 ID"),
 				assigned_to_id: z.number().int().optional().describe("担当者の数値 ID"),
 				parent_issue_id: z.number().int().optional().describe("親チケット ID(サブタスク化)"),
@@ -103,7 +109,24 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
 				const issue = Object.fromEntries(
 					Object.entries(args).filter(([, v]) => v !== undefined && v !== null),
 				);
-				return text(await api("POST", "/issues.json", undefined, { issue }));
+				const raw = await api("POST", "/issues.json", undefined, { issue });
+				// Redmine はプロジェクトで無効な tracker_id を黙って差し替えるため、結果を検証して警告する
+				if (args.tracker_id != null) {
+					try {
+						const parsed = JSON.parse(raw);
+						const actual = parsed?.issue?.tracker?.id;
+						if (actual != null && actual !== args.tracker_id) {
+							parsed.warning =
+								`指定した tracker_id=${args.tracker_id} はこのプロジェクトで無効なため、` +
+								`Redmine がトラッカー「${parsed.issue.tracker.name}」(id=${actual})に差し替えました。` +
+								`get_project で有効トラッカーを確認し、必要なら update_project の tracker_ids で追加してください`;
+							return text(JSON.stringify(parsed));
+						}
+					} catch {
+						// 応答が JSON でなければそのまま返す
+					}
+				}
+				return text(raw);
 			},
 		);
 
@@ -214,7 +237,13 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
 					.array(z.string())
 					.optional()
 					.describe(
-						'有効モジュール(例: ["issue_tracking","time_tracking","wiki"]。省略時は Redmine の既定)',
+						'有効モジュール(例: ["issue_tracking","time_tracking","wiki","files"]。省略時は Redmine の既定)',
+					),
+				tracker_ids: z
+					.array(z.number().int())
+					.optional()
+					.describe(
+						"有効にするトラッカー ID(例: [1,2,3,4]。省略時は Redmine の既定で、全トラッカーとは限らない。list_metadata で ID を確認)",
 					),
 			},
 			async (args) => {
@@ -223,6 +252,18 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
 				);
 				return text(await api("POST", "/projects.json", undefined, { project }));
 			},
+		);
+
+		this.server.tool(
+			"get_project",
+			"プロジェクトの詳細(有効トラッカー・有効モジュール・カテゴリ込み)を返す。チケット作成前のトラッカー確認に使う。",
+			{ project_id: z.string().describe("プロジェクトの identifier または数値 ID") },
+			async ({ project_id }) =>
+				text(
+					await api("GET", `/projects/${project_id}.json`, {
+						include: "trackers,enabled_modules,issue_categories",
+					}),
+				),
 		);
 
 		this.server.tool(
@@ -235,6 +276,10 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
 				is_public: z.boolean().optional(),
 				parent_id: z.number().int().optional(),
 				enabled_module_names: z.array(z.string()).optional(),
+				tracker_ids: z
+					.array(z.number().int())
+					.optional()
+					.describe("有効にするトラッカー ID(丸ごと置き換え。例: [1,2,3,4])"),
 			},
 			async ({ project_id, ...rest }) => {
 				const project = Object.fromEntries(
