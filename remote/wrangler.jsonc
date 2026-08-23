@@ -1,0 +1,47 @@
+/**
+ * Redmine リモート MCP サーバー(Cloudflare Worker)
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "redmine-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-03-10",
+  "compatibility_flags": ["nodejs_compat"],
+  /**
+   * シークレット(npx wrangler secret put <NAME>):
+   *   GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET — GitHub OAuth App
+   *   COOKIE_ENCRYPTION_KEY — openssl rand -hex 32
+   *   REDMINE_API_KEY — Redmine のマイアカウント → API アクセスキー
+   */
+  "vars": {
+    "REDMINE_URL": "https://redmine.dokkiitech.dev",
+    "ALLOWED_LOGIN": "dokkiitech"
+  },
+  "migrations": [
+    {
+      "new_sqlite_classes": ["MyMCP"],
+      "tag": "v1"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "MyMCP",
+        "name": "MCP_OBJECT"
+      }
+    ]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "c53e0d7c1f134098baff909799de5289"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  },
+  "dev": {
+    "port": 8788
+  }
+}
