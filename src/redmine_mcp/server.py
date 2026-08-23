@@ -91,6 +91,19 @@ def list_projects() -> str:
     return api("GET", "/projects.json", {"limit": 100})
 
 
+
+@mcp.tool()
+def get_project(project_id: str) -> str:
+    """プロジェクトの詳細(有効トラッカー・有効モジュール・カテゴリ込み)を返す。
+
+    チケット作成前に対象プロジェクトでトラッカーが有効か確認できる。
+    """
+    return api(
+        "GET",
+        f"/projects/{project_id}.json",
+        {"include": "trackers,enabled_modules,issue_categories"},
+    )
+
 @mcp.tool()
 def list_issues(
     project_id: str | None = None,
@@ -144,7 +157,9 @@ def create_issue(
         project_id: プロジェクトの identifier または数値 ID
         subject: 件名(必須)
         description: 説明(Textile/Markdown は Redmine 設定に従う)
-        tracker_id / priority_id / assigned_to_id: 数値 ID(list_metadata で確認)
+        tracker_id: トラッカー数値 ID。プロジェクトで有効なもののみ(無効な ID は
+            Redmine が黙って別トラッカーに差し替える。get_project で有効トラッカーを確認)
+        priority_id / assigned_to_id: 数値 ID(list_metadata で確認)
         parent_issue_id: 親チケット ID(サブタスクにする場合)
         custom_fields: カスタムフィールド(例: [{"id": 2, "value": "32"}])
         uploads: 添付(例: [{"token": "...", "filename": "a.txt"}]。先に upload_attachment)
@@ -161,7 +176,23 @@ def create_issue(
         "uploads": uploads,
     }
     issue = {k: v for k, v in issue.items() if v is not None}
-    return api("POST", "/issues.json", body={"issue": issue})
+    raw = api("POST", "/issues.json", body={"issue": issue})
+    # Redmine はプロジェクトで無効な tracker_id を黙って差し替えるため、結果を検証して警告する
+    if tracker_id is not None:
+        try:
+            parsed = json.loads(raw)
+            actual = parsed.get("issue", {}).get("tracker", {}).get("id")
+            if actual is not None and actual != tracker_id:
+                parsed["warning"] = (
+                    f"指定した tracker_id={tracker_id} はこのプロジェクトで無効なため、"
+                    f"Redmine がトラッカー「{parsed['issue']['tracker']['name']}」(id={actual})に"
+                    "差し替えました。get_project で有効トラッカーを確認し、必要なら "
+                    "update_project の tracker_ids で追加してください"
+                )
+                return json.dumps(parsed, ensure_ascii=False)
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass
+    return raw
 
 
 @mcp.tool()
@@ -242,6 +273,7 @@ def create_project(
     is_public: bool = False,
     parent_id: int | None = None,
     enabled_module_names: list[str] | None = None,
+    tracker_ids: list[int] | None = None,
 ) -> str:
     """プロジェクトを新規作成する。
 
@@ -249,7 +281,9 @@ def create_project(
         name: プロジェクト名
         identifier: 識別子(半角英小文字・数字・ハイフン。後から変更不可)
         is_public: 公開プロジェクトにするか(既定 False)
-        enabled_module_names: 有効モジュール(例: ["issue_tracking", "time_tracking", "wiki"])
+        enabled_module_names: 有効モジュール(例: ["issue_tracking", "time_tracking", "wiki", "files"])
+        tracker_ids: 有効にするトラッカー ID(例: [1, 2, 3, 4]。省略時は Redmine の既定で、
+            全トラッカーとは限らない)
     """
     project = {
         "name": name,
@@ -258,6 +292,7 @@ def create_project(
         "is_public": is_public,
         "parent_id": parent_id,
         "enabled_module_names": enabled_module_names,
+        "tracker_ids": tracker_ids,
     }
     project = {k: v for k, v in project.items() if v is not None}
     return api("POST", "/projects.json", body={"project": project})
@@ -271,14 +306,16 @@ def update_project(
     is_public: bool | None = None,
     parent_id: int | None = None,
     enabled_module_names: list[str] | None = None,
+    tracker_ids: list[int] | None = None,
 ) -> str:
-    """プロジェクトを更新する(enabled_module_names は丸ごと置き換えになる点に注意)。"""
+    """プロジェクトを更新する(enabled_module_names / tracker_ids は丸ごと置き換えになる点に注意)。"""
     project = {
         "name": name,
         "description": description,
         "is_public": is_public,
         "parent_id": parent_id,
         "enabled_module_names": enabled_module_names,
+        "tracker_ids": tracker_ids,
     }
     project = {k: v for k, v in project.items() if v is not None}
     if not project:

@@ -35,7 +35,7 @@ claude mcp add --scope user redmine \
 
 | ツール | 説明 |
 | --- | --- |
-| `list_projects` | プロジェクト一覧 |
+| `list_projects` / `get_project` | プロジェクト一覧・詳細(有効トラッカー・モジュール込み) |
 | `create_project` / `update_project` / `delete_project` | プロジェクトの作成・更新・削除 |
 | `list_issues` | チケット一覧(プロジェクト・ステータス・担当者・件名で絞り込み) |
 | `get_issue` | チケット詳細(コメント履歴・添付・遷移可能ステータス込み) |
