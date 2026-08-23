@@ -44,8 +44,12 @@ claude mcp add --scope user redmine \
 | `delete_issue` | チケット削除(取り消し不可) |
 | `list_wiki_pages` / `read_wiki_page` / `write_wiki_page` / `delete_wiki_page` | Wiki の一覧・取得・作成更新・削除 |
 | `create_time_entry` / `list_time_entries` / `update_time_entry` / `delete_time_entry` | 作業時間の記録・一覧・修正・削除 |
+| `upload_attachment` / `download_attachment` | ファイルのアップロード(トークン発行)・添付の取得 |
+| `list_files` / `add_project_file` | プロジェクトの「ファイル」一覧・登録(files モジュール必須) |
 | `search` | 全文検索(チケット・Wiki・ニュース等) |
 | `list_metadata` | トラッカー / ステータス / 優先度 / ユーザー / 作業分類の ID 一覧 |
+
+> **文書(Documents)モジュールは Redmine コアの REST API 非対応**のため操作できません。ファイル共有はプロジェクトの「ファイル」(files モジュール)か Wiki を使ってください。
 
 リモート版(Cloudflare Worker、ChatGPT / スマホのコネクタ用)は [`remote/`](remote/) を参照。
 
