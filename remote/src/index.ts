@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { z } from "zod";
 import { GitHubHandler } from "./github-handler";
-import { redmineApi } from "./redmine";
+import { redmineApi, redmineDownloadAttachment, redmineUpload } from "./redmine";
 import type { Props } from "./utils";
 
 // wrangler.jsonc の migrations / durable_objects が MyMCP を参照しているためクラス名は維持
@@ -87,6 +87,17 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
 					.array(z.object({ id: z.number().int(), value: z.string() }))
 					.optional()
 					.describe('カスタムフィールド(例: [{"id":2,"value":"32"}])'),
+				uploads: z
+					.array(
+						z.object({
+							token: z.string().describe("upload_attachment で得たトークン"),
+							filename: z.string(),
+							content_type: z.string().optional(),
+							description: z.string().optional(),
+						}),
+					)
+					.optional()
+					.describe("添付ファイル(先に upload_attachment でトークンを得る)"),
 			},
 			async (args) => {
 				const issue = Object.fromEntries(
@@ -114,6 +125,17 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
 					.describe(
 						'カスタムフィールド(例: [{"id":2,"value":"32"}])。Redmine は不正値を 204 のまま黙って捨てるので、更新後に get_issue で反映を検証すること',
 					),
+				uploads: z
+					.array(
+						z.object({
+							token: z.string().describe("upload_attachment で得たトークン"),
+							filename: z.string(),
+							content_type: z.string().optional(),
+							description: z.string().optional(),
+						}),
+					)
+					.optional()
+					.describe("添付ファイル(先に upload_attachment でトークンを得る)"),
 			},
 			async ({ issue_id, ...rest }) => {
 				const issue = Object.fromEntries(
@@ -356,6 +378,70 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			"作業時間の記録を削除する(取り消し不可)。",
 			{ time_entry_id: z.number().int().describe("作業時間レコードの ID") },
 			async ({ time_entry_id }) => text(await api("DELETE", `/time_entries/${time_entry_id}.json`)),
+		);
+
+		// ---------- 添付ファイル / プロジェクトファイル ----------
+		// 注: 文書(Documents)モジュールは Redmine コアの REST API 非対応のため提供できない。
+		//     ファイル共有はプロジェクトの「ファイル」(Files)か Wiki を使うこと。
+
+		this.server.tool(
+			"upload_attachment",
+			"ファイルを Redmine にアップロードしてトークンを得る。得たトークンは create_issue / update_issue の uploads、または add_project_file で使う(未使用トークンは一定期間で失効)。テキストは content_text、バイナリは content_base64 で渡す。",
+			{
+				filename: z.string().describe("ファイル名(例: report.md)"),
+				content_text: z.string().optional().describe("テキスト内容(content_base64 とどちらか必須)"),
+				content_base64: z.string().optional().describe("base64 エンコードしたバイナリ内容"),
+			},
+			async ({ filename, content_text, content_base64 }) => {
+				if (content_text == null && content_base64 == null) {
+					return text(
+						JSON.stringify({ error: "content_text か content_base64 のどちらかが必要です" }),
+					);
+				}
+				let data: Uint8Array;
+				if (content_text != null) {
+					data = new TextEncoder().encode(content_text);
+				} else {
+					try {
+						const bin = atob(content_base64!);
+						data = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+					} catch {
+						return text(JSON.stringify({ error: "content_base64 のデコードに失敗しました" }));
+					}
+				}
+				return text(await redmineUpload(this.env, filename, data));
+			},
+		);
+
+		this.server.tool(
+			"download_attachment",
+			"添付ファイルのメタ情報と中身を取得する(テキストはそのまま、バイナリは base64。200KB 超は本文省略)。",
+			{ attachment_id: z.number().int().describe("添付ファイル ID") },
+			async ({ attachment_id }) =>
+				text(await redmineDownloadAttachment(this.env, attachment_id)),
+		);
+
+		this.server.tool(
+			"list_files",
+			"プロジェクトの「ファイル」(Files モジュール)一覧を返す。",
+			{ project_id: z.string().describe("プロジェクトの identifier または数値 ID") },
+			async ({ project_id }) => text(await api("GET", `/projects/${project_id}/files.json`)),
+		);
+
+		this.server.tool(
+			"add_project_file",
+			"プロジェクトの「ファイル」にアップロード済みファイルを登録する(先に upload_attachment でトークンを得る。プロジェクトで files モジュールが有効である必要あり。文書(Documents)モジュールは API 非対応のためこちらを使う)。",
+			{
+				project_id: z.string().describe("プロジェクトの identifier または数値 ID"),
+				token: z.string().describe("upload_attachment で得たトークン"),
+				filename: z.string().optional().describe("表示ファイル名(省略時はアップロード時の名前)"),
+				description: z.string().optional(),
+			},
+			async ({ project_id, token: uploadToken, filename, description }) => {
+				const file: Record<string, unknown> = { token: uploadToken, filename, description };
+				for (const k of Object.keys(file)) if (file[k] == null) delete file[k];
+				return text(await api("POST", `/projects/${project_id}/files.json`, undefined, { file }));
+			},
 		);
 	}
 }

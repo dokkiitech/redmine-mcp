@@ -10,6 +10,7 @@
     -- uvx --from git+https://github.com/dokkiitech/redmine-mcp redmine-mcp
 """
 
+import base64
 import json
 import os
 import urllib.error
@@ -53,6 +54,32 @@ def api(method: str, path: str, params: dict | None = None, body: dict | None = 
         detail = e.read().decode(errors="replace")[:2000]
         return json.dumps(
             {"error": f"HTTP {e.code}", "detail": detail}, ensure_ascii=False
+        )
+    except (urllib.error.URLError, TimeoutError) as e:
+        return json.dumps({"error": str(e), "hint": DOWN_HINT}, ensure_ascii=False)
+
+
+
+def upload(filename: str, data: bytes) -> str:
+    """バイナリを uploads.json に送ってトークンを得る。"""
+    url = f"{BASE_URL}/uploads.json?filename={urllib.parse.quote(filename, safe='')}"
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "X-Redmine-API-Key": API_KEY,
+            "Content-Type": "application/octet-stream",
+            "User-Agent": "redmine-mcp/0.1",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.read().decode()
+    except urllib.error.HTTPError as e:
+        return json.dumps(
+            {"error": f"HTTP {e.code}", "detail": e.read().decode(errors="replace")[:2000]},
+            ensure_ascii=False,
         )
     except (urllib.error.URLError, TimeoutError) as e:
         return json.dumps({"error": str(e), "hint": DOWN_HINT}, ensure_ascii=False)
@@ -109,6 +136,7 @@ def create_issue(
     assigned_to_id: int | None = None,
     parent_issue_id: int | None = None,
     custom_fields: list[dict] | None = None,
+    uploads: list[dict] | None = None,
 ) -> str:
     """チケットを新規作成する。
 
@@ -119,6 +147,7 @@ def create_issue(
         tracker_id / priority_id / assigned_to_id: 数値 ID(list_metadata で確認)
         parent_issue_id: 親チケット ID(サブタスクにする場合)
         custom_fields: カスタムフィールド(例: [{"id": 2, "value": "32"}])
+        uploads: 添付(例: [{"token": "...", "filename": "a.txt"}]。先に upload_attachment)
     """
     issue = {
         "project_id": project_id,
@@ -129,6 +158,7 @@ def create_issue(
         "assigned_to_id": assigned_to_id,
         "parent_issue_id": parent_issue_id,
         "custom_fields": custom_fields,
+        "uploads": uploads,
     }
     issue = {k: v for k, v in issue.items() if v is not None}
     return api("POST", "/issues.json", body={"issue": issue})
@@ -145,6 +175,7 @@ def update_issue(
     priority_id: int | None = None,
     done_ratio: int | None = None,
     custom_fields: list[dict] | None = None,
+    uploads: list[dict] | None = None,
 ) -> str:
     """チケットを更新する。コメント追加は notes だけ渡せばよい。
 
@@ -155,6 +186,7 @@ def update_issue(
         done_ratio: 進捗率(0-100)
         custom_fields: カスタムフィールド(例: [{"id": 2, "value": "32"}])。
             Redmine は不正値を 204 のまま黙って捨てるので、更新後に get_issue で検証すること
+        uploads: 添付(例: [{"token": "...", "filename": "a.txt"}]。先に upload_attachment)
     """
     issue = {
         "notes": notes,
@@ -165,6 +197,7 @@ def update_issue(
         "priority_id": priority_id,
         "done_ratio": done_ratio,
         "custom_fields": custom_fields,
+        "uploads": uploads,
     }
     issue = {k: v for k, v in issue.items() if v is not None}
     if not issue:
@@ -377,6 +410,95 @@ def update_time_entry(
 def delete_time_entry(time_entry_id: int) -> str:
     """作業時間の記録を削除する(取り消し不可)。"""
     return api("DELETE", f"/time_entries/{time_entry_id}.json")
+
+
+# 注: 文書(Documents)モジュールは Redmine コアの REST API 非対応のため提供できない。
+#     ファイル共有はプロジェクトの「ファイル」(Files)か Wiki を使うこと。
+
+
+@mcp.tool()
+def upload_attachment(
+    filename: str,
+    content_text: str | None = None,
+    content_base64: str | None = None,
+) -> str:
+    """ファイルを Redmine にアップロードしてトークンを得る。
+
+    得たトークンは create_issue / update_issue の uploads、または add_project_file で使う
+    (未使用トークンは一定期間で失効)。テキストは content_text、バイナリは content_base64。
+    """
+    if content_text is None and content_base64 is None:
+        return json.dumps(
+            {"error": "content_text か content_base64 のどちらかが必要です"}, ensure_ascii=False
+        )
+    if content_text is not None:
+        data = content_text.encode()
+    else:
+        try:
+            data = base64.b64decode(content_base64)
+        except Exception:
+            return json.dumps({"error": "content_base64 のデコードに失敗しました"}, ensure_ascii=False)
+    return upload(filename, data)
+
+
+@mcp.tool()
+def download_attachment(attachment_id: int, max_bytes: int = 200_000) -> str:
+    """添付ファイルのメタ情報と中身を取得する(テキストはそのまま、バイナリは base64。上限超は本文省略)。"""
+    meta_raw = api("GET", f"/attachments/{attachment_id}.json")
+    try:
+        meta = json.loads(meta_raw)
+    except json.JSONDecodeError:
+        return meta_raw
+    if "attachment" not in meta:
+        return meta_raw
+    a = meta["attachment"]
+    if a.get("filesize", 0) > max_bytes:
+        return json.dumps(
+            {
+                "attachment": a,
+                "note": f"サイズが大きい({a['filesize']} bytes > {max_bytes})ため本文は省略。"
+                f"ブラウザで {a.get('content_url')} を開くこと",
+            },
+            ensure_ascii=False,
+        )
+    req = urllib.request.Request(
+        a["content_url"],
+        headers={"X-Redmine-API-Key": API_KEY, "User-Agent": "redmine-mcp/0.1"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            body = r.read()
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+        return json.dumps({"attachment": a, "error": f"content 取得に失敗: {e}"}, ensure_ascii=False)
+    ct = a.get("content_type") or ""
+    if any(t in ct for t in ("text/", "json", "xml", "csv", "javascript", "yaml", "markdown")):
+        return json.dumps({"attachment": a, "content": body.decode(errors="replace")}, ensure_ascii=False)
+    return json.dumps(
+        {"attachment": a, "content_base64": base64.b64encode(body).decode()}, ensure_ascii=False
+    )
+
+
+@mcp.tool()
+def list_files(project_id: str) -> str:
+    """プロジェクトの「ファイル」(Files モジュール)一覧を返す。"""
+    return api("GET", f"/projects/{project_id}/files.json")
+
+
+@mcp.tool()
+def add_project_file(
+    project_id: str,
+    token: str,
+    filename: str | None = None,
+    description: str | None = None,
+) -> str:
+    """プロジェクトの「ファイル」にアップロード済みファイルを登録する。
+
+    先に upload_attachment でトークンを得る。プロジェクトで files モジュールが有効である必要あり。
+    文書(Documents)モジュールは API 非対応のためこちらを使う。
+    """
+    file = {"token": token, "filename": filename, "description": description}
+    file = {k: v for k, v in file.items() if v is not None}
+    return api("POST", f"/projects/{project_id}/files.json", body={"file": file})
 
 
 def main() -> None:

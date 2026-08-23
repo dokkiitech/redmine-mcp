@@ -7,12 +7,15 @@
 - エンドポイント: `https://redmine-mcp.sukeryo27.workers.dev/mcp`(Streamable HTTP)/ `/sse`(SSE)
 - 認証: OAuth 2.1(workers-oauth-provider)+ 上流 GitHub OAuth。
   **`ALLOWED_LOGIN`(= dokkiitech)以外の GitHub アカウントは 403**
-- ツール: stdio 版(`src/redmine_mcp/server.py`)と同じ 19 個
-  - チケット: list_issues / get_issue / create_issue / update_issue(custom_fields 対応)/ delete_issue / search
+- ツール: stdio 版(`src/redmine_mcp/server.py`)と同じ 23 個
+  - チケット: list_issues / get_issue / create_issue / update_issue(custom_fields・uploads 対応)/ delete_issue / search
   - プロジェクト: list_projects / create_project / update_project / delete_project
   - Wiki: list_wiki_pages / read_wiki_page / write_wiki_page / delete_wiki_page
   - 作業時間: create_time_entry / list_time_entries / update_time_entry / delete_time_entry
+  - 添付・ファイル: upload_attachment / download_attachment / list_files / add_project_file
   - 参照: list_metadata(作業分類込み)
+- **文書(Documents)モジュールは Redmine コアの REST API 非対応**のため提供不可。
+  ファイル共有はプロジェクトの「ファイル」(Files モジュール)か Wiki を使う
 - Redmine 停止時間帯(3:00〜12:00 JST)は稼働時間のヒント付きエラーを返す
 - コスト: Workers / KV / Durable Objects すべて無料枠(¥0)
 
