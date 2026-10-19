@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "dokkiitech" }]
-dependencies = ["mcp>=1.2,<2"]
+dependencies = ["mcp>=1.30.0,<2"]
 
 [project.scripts]
 redmine-mcp = "redmine_mcp.server:main"
