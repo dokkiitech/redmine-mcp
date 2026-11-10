@@ -22,10 +22,51 @@ from mcp.server.fastmcp import FastMCP
 BASE_URL = os.environ.get("REDMINE_URL", "https://redmine.dokkiitech.dev").rstrip("/")
 API_KEY = os.environ.get("REDMINE_API_KEY", "")
 
+# Redmine の EC2 はスポットインスタンスで24時間稼働(定時停止なし、2026-11-08〜)。
+# 止まっているときは AWS のスポット中断。Cloudflare の sorry-worker が 503 + X-Down-Reason と
+# JSON(reason / message / retry_after_seconds)を返すので、それをそのまま停止理由として返す。
+DOWN_STATUSES = {502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 530}
+
+DOWN_HINTS = {
+    "spot-interruption": (
+        "Redmine は AWS スポットインスタンスの中断により一時停止しています。"
+        "Redmine は24時間稼働で定時停止(時間帯による停止)はありません。"
+        "空き容量が戻ると自動で再開するので、時間をおいて再試行してください。"
+    ),
+    "scheduled-stop": "Redmine は稼働時間外のため定時停止中です。稼働時間になると自動で再開します。",
+    "unexpected": "Redmine は稼働しているはずですが応答がありません。障害の可能性があります。",
+}
+
 DOWN_HINT = (
-    "Redmine に接続できませんでした。サーバー(EC2)は 3時〜12時 JST は停止しています。"
-    "稼働時間帯(12時〜翌3時 JST)か確認してください。"
+    "Redmine に接続できませんでした。Redmine は AWS スポットインスタンスで24時間稼働しており、"
+    "定時停止(時間帯による停止)はありません。スポット中断による一時停止か、ネットワーク・障害の可能性があります。"
+    "スポット中断なら空き容量が戻ると自動で再開するので、時間をおいて再試行してください。"
 )
+
+
+def down_error(error: str, headers=None, body: str = "") -> str:
+    """停止時のエラー応答。sorry-worker の停止理由があればそれを優先する。"""
+    reason = headers.get("X-Down-Reason") if headers is not None else None
+    info: dict = {}
+    if body:
+        try:
+            parsed = json.loads(body)
+            if isinstance(parsed, dict) and parsed.get("error") == "service_unavailable":
+                info = parsed
+        except ValueError:
+            pass
+    reason = info.get("reason") or reason
+    result = {
+        "error": error,
+        "stop_reason": reason or "unknown",
+        "scheduled_stop": reason == "scheduled-stop",
+        "hint": info.get("message") or DOWN_HINTS.get(reason or "", DOWN_HINT),
+    }
+    retry = info.get("retry_after_seconds") or (headers.get("Retry-After") if headers is not None else None)
+    if str(retry or "").isdigit():
+        result["retry_after_seconds"] = int(retry)
+    return json.dumps(result, ensure_ascii=False)
+
 
 mcp = FastMCP("redmine")
 
@@ -52,11 +93,13 @@ def api(method: str, path: str, params: dict | None = None, body: dict | None = 
             return text if text.strip() else json.dumps({"ok": True, "status": r.status})
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="replace")[:2000]
+        if e.code in DOWN_STATUSES:
+            return down_error(f"HTTP {e.code}", e.headers, detail)
         return json.dumps(
             {"error": f"HTTP {e.code}", "detail": detail}, ensure_ascii=False
         )
     except (urllib.error.URLError, TimeoutError) as e:
-        return json.dumps({"error": str(e), "hint": DOWN_HINT}, ensure_ascii=False)
+        return down_error(str(e))
 
 
 
@@ -77,12 +120,12 @@ def upload(filename: str, data: bytes) -> str:
         with urllib.request.urlopen(req, timeout=60) as r:
             return r.read().decode()
     except urllib.error.HTTPError as e:
-        return json.dumps(
-            {"error": f"HTTP {e.code}", "detail": e.read().decode(errors="replace")[:2000]},
-            ensure_ascii=False,
-        )
+        detail = e.read().decode(errors="replace")[:2000]
+        if e.code in DOWN_STATUSES:
+            return down_error(f"HTTP {e.code}", e.headers, detail)
+        return json.dumps({"error": f"HTTP {e.code}", "detail": detail}, ensure_ascii=False)
     except (urllib.error.URLError, TimeoutError) as e:
-        return json.dumps({"error": str(e), "hint": DOWN_HINT}, ensure_ascii=False)
+        return down_error(str(e))
 
 
 @mcp.tool()

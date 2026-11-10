@@ -55,7 +55,7 @@ claude mcp add --scope user redmine \
 
 ## 注意
 
-- Redmine サーバー(EC2)は **3時〜12時 JST は停止**しています。接続エラーが出たら稼働時間帯(12時〜翌3時 JST)か確認してください
+- Redmine サーバー(EC2)は**スポットインスタンスで24時間稼働**しており、定時停止はありません。止まっているときは AWS のスポット中断で、空き容量が戻ると自動で再開します。停止中のエラーには `stop_reason`(`spot-interruption` など)・`scheduled_stop`・`hint`・`retry_after_seconds` が入ります(Cloudflare の sorry ページが返す停止理由をそのまま使う)
 - Redmine の REST API は不正な値(存在しないカスタムフィールド ID など)を**エラーにせず黙って無視**します。更新系操作のあとは `get_issue` で読み返して反映を確認するのが安全です
 
 ## 更新の取り込み
