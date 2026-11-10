@@ -16,7 +16,7 @@
   - 参照: list_metadata(作業分類込み)
 - **文書(Documents)モジュールは Redmine コアの REST API 非対応**のため提供不可。
   ファイル共有はプロジェクトの「ファイル」(Files モジュール)か Wiki を使う
-- Redmine 停止時間帯(3:00〜12:00 JST)は稼働時間のヒント付きエラーを返す
+- Redmine 停止中(スポット中断など)は停止理由付きのエラー(`stop_reason` / `scheduled_stop` / `hint` / `retry_after_seconds`)を返す。定時停止はない(24時間稼働)
 - コスト: Workers / KV / Durable Objects すべて無料枠(¥0)
 
 ## 初回セットアップ
