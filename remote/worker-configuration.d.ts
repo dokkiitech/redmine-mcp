@@ -9,6 +9,7 @@ interface __BaseEnv_Env {
 	GITHUB_CLIENT_SECRET: string;
 	COOKIE_ENCRYPTION_KEY: string;
 	REDMINE_API_KEY: string;
+	USER_MAP?: string;
 	MCP_OBJECT: DurableObjectNamespace<import("./src/index").MyMCP>;
 }
 declare namespace Cloudflare {

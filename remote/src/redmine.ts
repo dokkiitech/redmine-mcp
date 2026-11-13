@@ -1,7 +1,33 @@
 /**
  * Redmine REST API ヘルパー(stdio 版 server.py の api() と同等)
- * 認証は Worker シークレット REDMINE_API_KEY。
+ * 認証は Worker シークレット REDMINE_API_KEY(管理者ユーザーのキー)。
+ * switchUser を渡すと X-Redmine-Switch-User でそのユーザーとして操作する
+ * (権限・作成者・履歴はすべてそのユーザーのものになる)。
  */
+
+/** Redmine 呼び出しのコンテキスト。switchUser が空なら API キーの持ち主として動く */
+export type RedmineCtx = { env: Env; switchUser?: string };
+
+function authHeaders(ctx: RedmineCtx): Record<string, string> {
+	const h: Record<string, string> = {
+		"X-Redmine-API-Key": ctx.env.REDMINE_API_KEY,
+		"User-Agent": "redmine-mcp-remote/0.2",
+	};
+	if (ctx.switchUser) h["X-Redmine-Switch-User"] = ctx.switchUser;
+	return h;
+}
+
+/** 412 は Switch-User 先のユーザーが存在しない/ロック中/キーが管理者でない場合に返る */
+function switchUserError(ctx: RedmineCtx, status: number, body: string): string | null {
+	if (status !== 412 || !ctx.switchUser) return null;
+	return JSON.stringify({
+		error: `HTTP 412`,
+		detail:
+			`Redmine ユーザー「${ctx.switchUser}」に切り替えられませんでした。` +
+			"ユーザーが存在しない・ロックされている、または REDMINE_API_KEY が管理者のキーでない可能性があります。管理者に連絡してください。",
+		redmine: body.slice(0, 500),
+	});
+}
 
 // Redmine の EC2 はスポットインスタンスで24時間稼働(定時停止なし、2026-11-08〜)。
 // 止まっているときは AWS のスポット中断。Cloudflare の sorry-worker が 503 + X-Down-Reason と
@@ -45,13 +71,13 @@ function downError(error: string, headers?: Headers, body = ""): string {
 }
 
 export async function redmineApi(
-	env: Env,
+	ctx: RedmineCtx,
 	method: string,
 	path: string,
 	params?: Record<string, unknown>,
 	body?: unknown,
 ): Promise<string> {
-	const base = (env.REDMINE_URL ?? "https://redmine.dokkiitech.dev").replace(/\/+$/, "");
+	const base = (ctx.env.REDMINE_URL ?? "https://redmine.dokkiitech.dev").replace(/\/+$/, "");
 	const url = new URL(base + path);
 	if (params) {
 		for (const [k, v] of Object.entries(params)) {
@@ -63,11 +89,7 @@ export async function redmineApi(
 	try {
 		res = await fetch(url, {
 			method,
-			headers: {
-				"X-Redmine-API-Key": env.REDMINE_API_KEY,
-				"Content-Type": "application/json",
-				"User-Agent": "redmine-mcp-remote/0.1",
-			},
+			headers: { ...authHeaders(ctx), "Content-Type": "application/json" },
 			body: body !== undefined ? JSON.stringify(body) : undefined,
 		});
 	} catch (e) {
@@ -79,24 +101,26 @@ export async function redmineApi(
 		if (DOWN_STATUSES.has(res.status)) {
 			return downError(`HTTP ${res.status}`, res.headers, textBody);
 		}
+		const su = switchUserError(ctx, res.status, textBody);
+		if (su) return su;
 		return JSON.stringify({ error: `HTTP ${res.status}`, detail: textBody.slice(0, 2000) });
 	}
 	return textBody.trim() ? textBody : JSON.stringify({ ok: true, status: res.status });
 }
 
 /** バイナリを uploads.json に送ってトークンを得る */
-export async function redmineUpload(env: Env, filename: string, data: Uint8Array): Promise<string> {
-	const base = (env.REDMINE_URL ?? "https://redmine.dokkiitech.dev").replace(/\/+$/, "");
+export async function redmineUpload(
+	ctx: RedmineCtx,
+	filename: string,
+	data: Uint8Array,
+): Promise<string> {
+	const base = (ctx.env.REDMINE_URL ?? "https://redmine.dokkiitech.dev").replace(/\/+$/, "");
 	const url = `${base}/uploads.json?filename=${encodeURIComponent(filename)}`;
 	let res: Response;
 	try {
 		res = await fetch(url, {
 			method: "POST",
-			headers: {
-				"X-Redmine-API-Key": env.REDMINE_API_KEY,
-				"Content-Type": "application/octet-stream",
-				"User-Agent": "redmine-mcp-remote/0.1",
-			},
+			headers: { ...authHeaders(ctx), "Content-Type": "application/octet-stream" },
 			body: data as unknown as BodyInit,
 		});
 	} catch (e) {
@@ -105,6 +129,8 @@ export async function redmineUpload(env: Env, filename: string, data: Uint8Array
 	const textBody = await res.text();
 	if (!res.ok) {
 		if (DOWN_STATUSES.has(res.status)) return downError(`HTTP ${res.status}`, res.headers, textBody);
+		const su = switchUserError(ctx, res.status, textBody);
+		if (su) return su;
 		return JSON.stringify({ error: `HTTP ${res.status}`, detail: textBody.slice(0, 2000) });
 	}
 	return textBody;
@@ -114,11 +140,11 @@ const TEXTUAL = /^text\/|json|xml|csv|javascript|yaml|markdown/i;
 
 /** 添付の中身を取得(テキストのみ。サイズ上限つき) */
 export async function redmineDownloadAttachment(
-	env: Env,
+	ctx: RedmineCtx,
 	attachmentId: number,
 	maxBytes = 200_000,
 ): Promise<string> {
-	const meta = await redmineApi(env, "GET", `/attachments/${attachmentId}.json`);
+	const meta = await redmineApi(ctx, "GET", `/attachments/${attachmentId}.json`);
 	let parsed: any;
 	try {
 		parsed = JSON.parse(meta);
@@ -134,7 +160,7 @@ export async function redmineDownloadAttachment(
 		});
 	}
 	const res = await fetch(a.content_url, {
-		headers: { "X-Redmine-API-Key": env.REDMINE_API_KEY, "User-Agent": "redmine-mcp-remote/0.1" },
+		headers: authHeaders(ctx),
 	});
 	if (!res.ok) {
 		return JSON.stringify({ attachment: a, error: `content 取得に失敗: HTTP ${res.status}` });

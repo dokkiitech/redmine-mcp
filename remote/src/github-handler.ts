@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
 import { Octokit } from "octokit";
+import { resolveRedmineLogin } from "./users";
 import { fetchUpstreamAuthToken, getUpstreamAuthorizeUrl, type Props } from "./utils";
 import {
 	addApprovedClient,
@@ -172,9 +173,12 @@ app.get("/callback", async (c) => {
 	const user = await new Octokit({ auth: accessToken }).rest.users.getAuthenticated();
 	const { login, name, email } = user.data;
 
-	// 個人用サーバーのため、許可した GitHub アカウント以外は認可を発行しない
-	if (login !== c.env.ALLOWED_LOGIN) {
-		return c.text(`Access denied: GitHub user "${login}" is not allowed`, 403);
+	// USER_MAP(GitHub → Redmine の対応表)に載っていない GitHub アカウントには認可を発行しない
+	if (resolveRedmineLogin(c.env, login) === null) {
+		return c.text(
+			`Access denied: GitHub user "${login}" is not registered. 管理者に Redmine アカウントとの紐付けを依頼してください。`,
+			403,
+		);
 	}
 
 	// Return back to the MCP client a new token

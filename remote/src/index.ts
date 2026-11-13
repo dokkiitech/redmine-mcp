@@ -3,7 +3,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { z } from "zod";
 import { GitHubHandler } from "./github-handler";
-import { redmineApi, redmineDownloadAttachment, redmineUpload } from "./redmine";
+import { type RedmineCtx, redmineApi, redmineDownloadAttachment, redmineUpload } from "./redmine";
+import { resolveRedmineLogin } from "./users";
 import type { Props } from "./utils";
 
 // wrangler.jsonc の migrations / durable_objects が MyMCP を参照しているためクラス名は維持
@@ -14,17 +15,21 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
 	});
 
 	async init() {
-		// 認可は github-handler(/callback)で ALLOWED_LOGIN のみに絞っているが、二重に防御する
-		if (this.props!.login !== this.env.ALLOWED_LOGIN) {
+		// 認可は github-handler(/callback)で USER_MAP に載っている人だけに絞っているが、二重に防御する。
+		// 毎セッション USER_MAP を引き直すので、表から消せば既存トークンでも以後は使えなくなる
+		const redmineLogin = resolveRedmineLogin(this.env, this.props?.login);
+		if (redmineLogin === null) {
 			return;
 		}
+		// 管理者キー + X-Redmine-Switch-User で、接続した本人の Redmine ユーザーとして操作する
+		const ctx: RedmineCtx = { env: this.env, switchUser: redmineLogin || undefined };
 
 		const api = (
 			method: string,
 			path: string,
 			params?: Record<string, unknown>,
 			body?: unknown,
-		) => redmineApi(this.env, method, path, params, body);
+		) => redmineApi(ctx, method, path, params, body);
 		const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
 
 		this.server.tool("list_projects", "Redmine のプロジェクト一覧を返す。", {}, async () =>
@@ -454,7 +459,7 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
 						return text(JSON.stringify({ error: "content_base64 のデコードに失敗しました" }));
 					}
 				}
-				return text(await redmineUpload(this.env, filename, data));
+				return text(await redmineUpload(ctx, filename, data));
 			},
 		);
 
@@ -463,7 +468,7 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			"添付ファイルのメタ情報と中身を取得する(テキストはそのまま、バイナリは base64。200KB 超は本文省略)。",
 			{ attachment_id: z.number().int().describe("添付ファイル ID") },
 			async ({ attachment_id }) =>
-				text(await redmineDownloadAttachment(this.env, attachment_id)),
+				text(await redmineDownloadAttachment(ctx, attachment_id)),
 		);
 
 		this.server.tool(
