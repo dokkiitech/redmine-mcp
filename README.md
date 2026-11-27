@@ -40,7 +40,7 @@ claude mcp add --scope user redmine \
 | `list_issues` | チケット一覧(プロジェクト・ステータス・担当者・件名で絞り込み) |
 | `get_issue` | チケット詳細(コメント履歴・添付・遷移可能ステータス込み) |
 | `create_issue` | チケット作成(custom_fields 対応) |
-| `update_issue` | チケット更新(コメント追加・ステータス変更・進捗率・custom_fields など) |
+| `update_issue` | チケット更新(コメント追加・ステータス / トラッカー変更・進捗率・custom_fields など) |
 | `delete_issue` | チケット削除(取り消し不可) |
 | `list_wiki_pages` / `read_wiki_page` / `write_wiki_page` / `delete_wiki_page` | Wiki の一覧・取得・作成更新・削除 |
 | `create_time_entry` / `list_time_entries` / `update_time_entry` / `delete_time_entry` | 作業時間の記録・一覧・修正・削除 |

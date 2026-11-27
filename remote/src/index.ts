@@ -144,6 +144,13 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
 				status_id: z.number().int().optional().describe("ステータス数値 ID"),
 				subject: z.string().optional(),
 				description: z.string().optional(),
+				tracker_id: z
+					.number()
+					.int()
+					.optional()
+					.describe(
+						"トラッカー数値 ID。プロジェクトで有効なもののみ有効(無効な ID は Redmine が 204 のまま黙って無視する。get_project で有効トラッカーを確認できる)",
+					),
 				assigned_to_id: z.number().int().optional(),
 				priority_id: z.number().int().optional(),
 				done_ratio: z.number().int().min(0).max(100).optional().describe("進捗率(0-100)"),
@@ -172,7 +179,27 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
 				if (Object.keys(issue).length === 0) {
 					return text(JSON.stringify({ error: "更新内容が空です" }));
 				}
-				return text(await api("PUT", `/issues/${issue_id}.json`, undefined, { issue }));
+				const raw = await api("PUT", `/issues/${issue_id}.json`, undefined, { issue });
+				// Redmine はプロジェクトで無効な tracker_id を 204 のまま黙って無視するため、読み返して検証する
+				if (rest.tracker_id != null) {
+					try {
+						const result = JSON.parse(raw);
+						if (result?.ok) {
+							const current = JSON.parse(await api("GET", `/issues/${issue_id}.json`));
+							const actual = current?.issue?.tracker?.id;
+							if (actual != null && actual !== rest.tracker_id) {
+								result.warning =
+									`指定した tracker_id=${rest.tracker_id} はこのプロジェクトで無効なため反映されず、` +
+									`トラッカーは「${current.issue.tracker.name}」(id=${actual})のままです。` +
+									`get_project で有効トラッカーを確認し、必要なら update_project の tracker_ids で追加してください`;
+								return text(JSON.stringify(result));
+							}
+						}
+					} catch {
+						// 応答が JSON でなければそのまま返す
+					}
+				}
+				return text(raw);
 			},
 		);
 
