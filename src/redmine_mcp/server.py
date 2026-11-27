@@ -245,6 +245,7 @@ def update_issue(
     status_id: int | None = None,
     subject: str | None = None,
     description: str | None = None,
+    tracker_id: int | None = None,
     assigned_to_id: int | None = None,
     priority_id: int | None = None,
     done_ratio: int | None = None,
@@ -257,6 +258,8 @@ def update_issue(
         issue_id: チケット ID
         notes: 追加するコメント
         status_id: ステータス数値 ID(list_metadata で確認)
+        tracker_id: トラッカー数値 ID。プロジェクトで有効なもののみ(無効な ID は
+            Redmine が 204 のまま黙って無視する。get_project で有効トラッカーを確認)
         done_ratio: 進捗率(0-100)
         custom_fields: カスタムフィールド(例: [{"id": 2, "value": "32"}])。
             Redmine は不正値を 204 のまま黙って捨てるので、更新後に get_issue で検証すること
@@ -267,6 +270,7 @@ def update_issue(
         "status_id": status_id,
         "subject": subject,
         "description": description,
+        "tracker_id": tracker_id,
         "assigned_to_id": assigned_to_id,
         "priority_id": priority_id,
         "done_ratio": done_ratio,
@@ -276,7 +280,25 @@ def update_issue(
     issue = {k: v for k, v in issue.items() if v is not None}
     if not issue:
         return json.dumps({"error": "更新内容が空です"}, ensure_ascii=False)
-    return api("PUT", f"/issues/{issue_id}.json", body={"issue": issue})
+    raw = api("PUT", f"/issues/{issue_id}.json", body={"issue": issue})
+    # Redmine はプロジェクトで無効な tracker_id を 204 のまま黙って無視するため、読み返して検証する
+    if tracker_id is not None:
+        try:
+            result = json.loads(raw)
+            if result.get("ok"):
+                current = json.loads(api("GET", f"/issues/{issue_id}.json"))
+                actual = current.get("issue", {}).get("tracker", {}).get("id")
+                if actual is not None and actual != tracker_id:
+                    result["warning"] = (
+                        f"指定した tracker_id={tracker_id} はこのプロジェクトで無効なため反映されず、"
+                        f"トラッカーは「{current['issue']['tracker']['name']}」(id={actual})のままです。"
+                        "get_project で有効トラッカーを確認し、必要なら update_project の "
+                        "tracker_ids で追加してください"
+                    )
+                    return json.dumps(result, ensure_ascii=False)
+        except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
+            pass
+    return raw
 
 
 @mcp.tool()
